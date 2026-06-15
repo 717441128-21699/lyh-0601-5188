@@ -1,0 +1,156 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  password  String
+  name      String
+  role      String
+  phone     String?
+  email     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  applications  Application[]
+  inspections   Inspection[]
+  workOrders    WorkOrder[]   @relation("assignedOrders")
+  notifications Notification[]
+}
+
+model AdSlot {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  type        String
+  width       Float
+  height      Float
+  area        Float
+  address     String
+  district    String
+  latitude    Float?
+  longitude   Float?
+  dailyRate   Decimal
+  status      String   @default("ACTIVE")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  applications Application[]
+  inspections  Inspection[]
+  workOrders   WorkOrder[]
+}
+
+model Application {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  applicantId     String
+  applicant       User     @relation(fields: [applicantId], references: [id])
+  adSlotId        String
+  adSlot          AdSlot   @relation(fields: [adSlotId], references: [id])
+  adTitle         String
+  adContent       String?
+  startTime       DateTime
+  endTime         DateTime
+  durationDays    Int
+  totalFee        Decimal
+  status          String   @default("PENDING_REVIEW")
+  designImage     String?
+  designReviewMsg String?
+  acceptanceImage String?
+  similarity      Float?
+  rejectReason    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workOrders    WorkOrder[]
+  bills         Bill[]
+  notifications Notification[]
+}
+
+model WorkOrder {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  type          String
+  title         String
+  description   String?
+  adSlotId      String
+  adSlot        AdSlot   @relation(fields: [adSlotId], references: [id])
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  assigneeId    String?
+  assignee      User?    @relation("assignedOrders", fields: [assigneeId], references: [id])
+  status        String   @default("PENDING")
+  priority      Int      @default(1)
+  deadline      DateTime?
+  completedAt   DateTime?
+  result        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Inspection {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  adSlotId      String
+  adSlot        AdSlot   @relation(fields: [adSlotId], references: [id])
+  inspectorId   String
+  inspector     User     @relation(fields: [inspectorId], references: [id])
+  scheduledDate DateTime
+  completedDate DateTime?
+  status        String   @default("PENDING")
+  hasDamage     Boolean?
+  hasExpired    Boolean?
+  photos        String?
+  remark        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Bill {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id])
+  billMonth     String
+  amount        Decimal
+  status        String   @default("UNPAID")
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Notification {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  type          String
+  title         String
+  content       String
+  isRead        Boolean  @default(false)
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  createdAt     DateTime @default(now())
+}
+
+model DailyReport {
+  id               String   @id @default(uuid())
+  reportDate       DateTime @unique
+  totalSlots       Int
+  occupiedSlots    Int
+  occupancyRate    Float
+  expiringIn30Days Int
+  expiredToday     Int
+  inspectionsTotal Int
+  inspectionsDone  Int
+  inspectionRate   Float
+  newApplications  Int
+  completedOrders  Int
+  createdAt        DateTime @default(now())
+}
