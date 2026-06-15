@@ -8,6 +8,33 @@ import dayjs from 'dayjs'
 
 const router = Router()
 
+const notifyWorkOrder = async (workOrder: any, slotName: string) => {
+  const admins = await prisma.user.findMany({
+    where: { role: UserRole.ADMIN },
+    select: { id: true }
+  })
+  const inspectors = await prisma.user.findMany({
+    where: { role: UserRole.INSPECTOR },
+    select: { id: true }
+  })
+  const targets = [...admins, ...inspectors]
+  const seen = new Set<string>()
+  for (const t of targets) {
+    if (seen.has(t.id)) continue
+    seen.add(t.id)
+    const notifData = {
+      type: NotificationType.WORK_ORDER,
+      title: '新的工单',
+      content: `广告位「${slotName}」已生成工单：${workOrder.title}`,
+      workOrderId: workOrder.id
+    }
+    await prisma.notification.create({
+      data: { userId: t.id, ...notifData }
+    })
+    sendNotification(t.id, notifData)
+  }
+}
+
 router.post('/generate', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
   try {
     const { district, scheduledDate, inspectorIds } = req.body
@@ -64,10 +91,7 @@ router.post('/generate', authMiddleware, roleMiddleware('ADMIN'), async (req, re
         content: `您有新的巡检任务：${slot.name}，请按时完成`,
       }
       await prisma.notification.create({
-        data: {
-          userId: inspectors[inspectorIndex],
-          ...notificationData
-        }
+        data: { userId: inspectors[inspectorIndex], ...notificationData }
       })
       sendNotification(inspectors[inspectorIndex], notificationData)
     }
@@ -150,10 +174,12 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
   try {
     const { hasDamage, hasExpired, photos, remark } = req.body
     const id = req.params.id
+    const damage = hasDamage || false
+    const expired = hasExpired || false
 
     const inspection = await prisma.inspection.findUnique({
       where: { id },
-      include: { adSlot: true }
+      include: { adSlot: true, inspector: { select: { id: true, name: true } } }
     })
 
     if (!inspection) {
@@ -171,9 +197,9 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
     const updated = await prisma.inspection.update({
       where: { id },
       data: {
-        status: hasDamage || hasExpired ? InspectionStatus.FAILED : InspectionStatus.COMPLETED,
-        hasDamage: hasDamage || false,
-        hasExpired: hasExpired || false,
+        status: damage || expired ? InspectionStatus.FAILED : InspectionStatus.COMPLETED,
+        hasDamage: damage,
+        hasExpired: expired,
         photos,
         remark,
         completedDate: new Date()
@@ -181,40 +207,57 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
       include: { adSlot: true }
     })
 
-    if (hasDamage) {
+    if (damage || expired) {
+      const issues: string[] = []
+      let priority = 1
+      let orderType = WorkOrderType.MAINTENANCE
+
+      if (damage && expired) {
+        issues.push('广告位破损')
+        issues.push('广告已过期')
+        priority = 3
+        orderType = WorkOrderType.MAINTENANCE
+      } else if (damage) {
+        issues.push('广告位破损')
+        priority = 2
+        orderType = WorkOrderType.MAINTENANCE
+      } else if (expired) {
+        issues.push('广告已过期需处理')
+        priority = 2
+        orderType = WorkOrderType.MAINTENANCE
+      }
+
+      const issueSummary = issues.join('；')
+      const descriptionParts = [
+        `巡检发现问题：${issueSummary}`,
+        remark ? `备注：${remark}` : '',
+        `优先级：P${priority}（${priority === 3 ? '紧急' : priority === 2 ? '高' : '普通'}）`
+      ].filter(Boolean).join('\n')
+
       const workOrder = await prisma.workOrder.create({
         data: {
           code: generateCode('WO'),
-          type: WorkOrderType.MAINTENANCE,
-          title: `维修工单 - ${inspection.adSlot.name}`,
-          description: `巡检发现广告位破损：${remark || '需要维修'}`,
+          type: orderType,
+          title: `${damage && expired ? '维修+过期处置' : damage ? '维修' : '过期处置'} - ${inspection.adSlot.name}`,
+          description: descriptionParts,
           adSlotId: inspection.adSlotId,
           status: WorkOrderStatus.PENDING,
-          priority: hasExpired ? 3 : 2
+          priority
         }
       })
 
-      const admins = await prisma.user.findMany({
-        where: { role: UserRole.ADMIN },
-        select: { id: true }
-      })
-
-      for (const admin of admins) {
-        const notifData = {
-          type: NotificationType.WORK_ORDER,
-          title: '新的维修工单',
-          content: `广告位「${inspection.adSlot.name}」巡检发现破损，已生成维修工单`,
-          workOrderId: workOrder.id
-        }
-        await prisma.notification.create({
-          data: {
-            userId: admin.id,
-            ...notifData
-          }
-        })
-        sendNotification(admin.id, notifData)
-      }
+      await notifyWorkOrder(workOrder, inspection.adSlot.name)
     }
+
+    const inspectorNotif = {
+      type: NotificationType.INSPECTION,
+      title: '巡检提交成功',
+      content: `广告位「${inspection.adSlot.name}」巡检已提交，${damage || expired ? '已生成工单' : '状态正常'}`,
+    }
+    await prisma.notification.create({
+      data: { userId: inspection.inspectorId, ...inspectorNotif }
+    })
+    sendNotification(inspection.inspectorId, inspectorNotif)
 
     res.json(successResponse(updated, '巡检已完成'))
   } catch (error: any) {
@@ -249,7 +292,7 @@ router.get('/stats/summary', authMiddleware, async (req: AuthRequest, res) => {
       completed,
       failed,
       pending,
-      completionRate: total > 0 ? Math.round(((completed + failed) / total) * 100) / 100 : 0
+      completionRate: total > 0 ? Math.round(((completed + failed) / total) * 10000) / 100 : 0
     }))
   } catch (error: any) {
     res.json(errorResponse(error.message))

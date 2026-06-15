@@ -1,4 +1,6 @@
 import dayjs from 'dayjs'
+import minMax from 'dayjs/plugin/minMax'
+dayjs.extend(minMax)
 import { v4 as uuidv4 } from 'uuid'
 
 export const generateCode = (prefix: string): string => {

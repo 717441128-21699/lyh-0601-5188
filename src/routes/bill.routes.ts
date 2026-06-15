@@ -5,9 +5,18 @@ import { authMiddleware, roleMiddleware, AuthRequest } from '../middleware/auth'
 import { sendNotification } from '../services/notification.service'
 import { BillStatus, NotificationType, UserRole, ApplicationStatus } from '../types/enums'
 import dayjs from 'dayjs'
+import minMax from 'dayjs/plugin/minMax'
+dayjs.extend(minMax)
 import ExcelJS from 'exceljs'
 
 const router = Router()
+
+const calcOverlapDays = (appStart: Date, appEnd: Date, monthStart: Date, monthEnd: Date): number => {
+  const overlapStart = dayjs.max(dayjs(appStart), dayjs(monthStart))
+  const overlapEnd = dayjs.min(dayjs(appEnd), dayjs(monthEnd))
+  const days = overlapEnd.diff(overlapStart, 'day') + 1
+  return Math.max(days, 0)
+}
 
 router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async (req, res) => {
   try {
@@ -18,17 +27,16 @@ router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANC
     }
 
     const [year, month] = billMonth.split('-').map(Number)
-    const startDate = dayjs(`${year}-${month}-01`).startOf('month').toDate()
-    const endDate = dayjs(`${year}-${month}-01`).endOf('month').toDate()
+    const monthStart = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).startOf('month').toDate()
+    const monthEnd = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).endOf('month').toDate()
 
-    const publishedApps = await prisma.application.findMany({
+    const billableApps = await prisma.application.findMany({
       where: {
         status: {
-          in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.EXPIRED]
+          in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.EXPIRED, ApplicationStatus.CANCELLED]
         },
-        OR: [
-          { startTime: { lte: endDate }, endTime: { gte: startDate } }
-        ]
+        startTime: { lte: monthEnd },
+        endTime: { gte: monthStart }
       },
       include: {
         adSlot: true,
@@ -40,21 +48,15 @@ router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANC
 
     const generatedBills: any[] = []
 
-    for (const app of publishedApps) {
-      const overlapStart = dayjs.max(dayjs(app.startTime), dayjs(startDate))
-      const overlapEnd = dayjs.min(dayjs(app.endTime), dayjs(endDate))
-      const days = overlapEnd.diff(overlapStart, 'day') + 1
-
-      if (days <= 0) continue
+    for (const app of billableApps) {
+      const occupiedDays = calcOverlapDays(app.startTime, app.endTime, monthStart, monthEnd)
+      if (occupiedDays <= 0) continue
 
       const dailyRate = parseFloat(app.adSlot.dailyRate.toString())
-      const amount = dailyRate * days
+      const amount = dailyRate * occupiedDays
 
       const existingBill = await prisma.bill.findFirst({
-        where: {
-          applicationId: app.id,
-          billMonth
-        }
+        where: { applicationId: app.id, billMonth }
       })
 
       if (!existingBill) {
@@ -63,17 +65,16 @@ router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANC
             code: generateCode('BL'),
             applicationId: app.id,
             billMonth,
+            occupiedDays,
             amount,
             status: BillStatus.UNPAID
           },
           include: {
             application: {
               include: {
-        adSlot: true,
-        applicant: {
-          select: { id: true, name: true, username: true }
-        }
-      }
+                adSlot: true,
+                applicant: { select: { id: true, name: true, username: true } }
+              }
             }
           }
         })
@@ -82,17 +83,20 @@ router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANC
         const notificationData = {
           type: NotificationType.BILL,
           title: '新的账单',
-          content: `您有新的账单：${billMonth}月，金额 ¥${amount.toFixed(2)}`,
+          content: `您有新的账单：${billMonth}月，占用${occupiedDays}天，金额 ¥${amount.toFixed(2)}`,
           applicationId: app.id
         }
 
         await prisma.notification.create({
-          data: {
-            userId: app.applicantId,
-            ...notificationData
-          }
+          data: { userId: app.applicantId, ...notificationData }
         })
         sendNotification(app.applicantId, notificationData)
+      } else if (existingBill.occupiedDays !== occupiedDays || parseFloat(existingBill.amount.toString()) !== amount) {
+        const updated = await prisma.bill.update({
+          where: { id: existingBill.id },
+          data: { occupiedDays, amount }
+        })
+        generatedBills.push(updated)
       }
     }
 
@@ -176,7 +180,14 @@ router.put('/:id/pay', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN', 'FI
 
     const bill = await prisma.bill.findUnique({
       where: { id },
-      include: { application: { include: { adSlot: true } } }
+      include: {
+        application: {
+          include: {
+            adSlot: true,
+            applicant: { select: { id: true, name: true } }
+          }
+        }
+      }
     })
 
     if (!bill) {
@@ -195,20 +206,33 @@ router.put('/:id/pay', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN', 'FI
       }
     })
 
-    const notificationData = {
+    const applicantNotif = {
       type: NotificationType.BILL,
       title: '账单已支付',
-      content: `账单 ${bill.code} 已支付成功`,
+      content: `账单 ${bill.code}（${bill.billMonth}月，¥${parseFloat(bill.amount.toString()).toFixed(2)}）已支付成功`,
       applicationId: bill.applicationId
     }
-
     await prisma.notification.create({
-      data: {
-        userId: bill.application.applicantId,
-        ...notificationData
-      }
+      data: { userId: bill.application.applicantId, ...applicantNotif }
     })
-    sendNotification(bill.application.applicantId, notificationData)
+    sendNotification(bill.application.applicantId, applicantNotif)
+
+    const adminFinanceUsers = await prisma.user.findMany({
+      where: { role: { in: [UserRole.ADMIN, UserRole.FINANCE] } },
+      select: { id: true }
+    })
+    for (const u of adminFinanceUsers) {
+      const adminNotif = {
+        type: NotificationType.BILL,
+        title: '账单支付通知',
+        content: `广告主「${bill.application.applicant.name}」的账单 ${bill.code}（¥${parseFloat(bill.amount.toString()).toFixed(2)}）已支付`,
+        applicationId: bill.applicationId
+      }
+      await prisma.notification.create({
+        data: { userId: u.id, ...adminNotif }
+      })
+      sendNotification(u.id, adminNotif)
+    }
 
     res.json(successResponse(updated, '支付成功'))
   } catch (error: any) {
@@ -247,6 +271,8 @@ router.post('/export', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async
       { header: '广告主', key: 'advertiser', width: 15 },
       { header: '广告位', key: 'adSlot', width: 20 },
       { header: '广告标题', key: 'adTitle', width: 25 },
+      { header: '占用天数', key: 'occupiedDays', width: 10 },
+      { header: '日费率(元)', key: 'dailyRate', width: 12 },
       { header: '金额(元)', key: 'amount', width: 12 },
       { header: '状态', key: 'status', width: 10 },
       { header: '支付时间', key: 'paidAt', width: 20 },
@@ -266,6 +292,8 @@ router.post('/export', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async
         advertiser: bill.application.applicant.name,
         adSlot: bill.application.adSlot.name,
         adTitle: bill.application.adTitle,
+        occupiedDays: bill.occupiedDays,
+        dailyRate: parseFloat(bill.application.adSlot.dailyRate.toString()).toFixed(2),
         amount: parseFloat(bill.amount.toString()).toFixed(2),
         status: statusMap[bill.status] || bill.status,
         paidAt: bill.paidAt ? dayjs(bill.paidAt).format('YYYY-MM-DD HH:mm') : '',
@@ -274,8 +302,9 @@ router.post('/export', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async
     }
 
     const totalAmount = bills.reduce((sum, bill) => sum + parseFloat(bill.amount.toString()), 0)
+    const totalDays = bills.reduce((sum, bill) => sum + bill.occupiedDays, 0)
     worksheet.addRow({})
-    worksheet.addRow({ code: '合计', amount: totalAmount.toFixed(2) })
+    worksheet.addRow({ code: '合计', occupiedDays: totalDays, amount: totalAmount.toFixed(2) })
 
     const filename = `对账单_${billMonth || '全部'}_${dayjs().format('YYYYMMDDHHmmss')}.xlsx`
     

@@ -119,6 +119,7 @@ model Bill {
   applicationId String
   application   Application @relation(fields: [applicationId], references: [id])
   billMonth     String
+  occupiedDays  Int      @default(0)
   amount        Decimal
   status        String   @default("UNPAID")
   paidAt        DateTime?
@@ -136,6 +137,7 @@ model Notification {
   isRead        Boolean  @default(false)
   applicationId String?
   application   Application? @relation(fields: [applicationId], references: [id])
+  workOrderId   String?
   createdAt     DateTime @default(now())
 }
 

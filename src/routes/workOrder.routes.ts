@@ -1,11 +1,24 @@
 import { Router } from 'express'
 import prisma from '../prisma'
-import { successResponse, errorResponse } from '../utils'
+import { successResponse, errorResponse, generateCode } from '../utils'
 import { authMiddleware, roleMiddleware, AuthRequest } from '../middleware/auth'
 import { sendNotification } from '../services/notification.service'
-import { WorkOrderStatus, NotificationType, UserRole, WorkOrderType } from '../types/enums'
+import { WorkOrderStatus, NotificationType, UserRole, WorkOrderType, ApplicationStatus } from '../types/enums'
 
 const router = Router()
+
+const notifyRoles = async (roles: string[], notifData: any) => {
+  const users = await prisma.user.findMany({
+    where: { role: { in: roles } },
+    select: { id: true }
+  })
+  for (const u of users) {
+    await prisma.notification.create({
+      data: { userId: u.id, ...notifData }
+    })
+    sendNotification(u.id, notifData)
+  }
+}
 
 router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -56,7 +69,11 @@ router.get('/:id', authMiddleware, async (req, res) => {
       where: { id: req.params.id },
       include: {
         adSlot: true,
-        application: true,
+        application: {
+          include: {
+            applicant: { select: { id: true, name: true } }
+          }
+        },
         assignee: { select: { id: true, name: true, username: true, phone: true } }
       }
     })
@@ -74,8 +91,6 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
   try {
     const { type, title, description, adSlotId, applicationId, assigneeId, priority, deadline } = req.body
-
-    const { generateCode } = await import('../utils')
 
     const workOrder = await prisma.workOrder.create({
       data: {
@@ -101,13 +116,17 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
         workOrderId: workOrder.id
       }
       await prisma.notification.create({
-        data: {
-          userId: assigneeId,
-          ...notificationData
-        }
+        data: { userId: assigneeId, ...notificationData }
       })
       sendNotification(assigneeId, notificationData)
     }
+
+    await notifyRoles([UserRole.ADMIN], {
+      type: NotificationType.WORK_ORDER,
+      title: '新工单已创建',
+      content: `工单「${title}」已创建`,
+      workOrderId: workOrder.id
+    })
 
     res.json(successResponse(workOrder, '工单创建成功'))
   } catch (error: any) {
@@ -137,10 +156,7 @@ router.put('/:id/assign', authMiddleware, roleMiddleware('ADMIN'), async (req, r
       workOrderId: id
     }
     await prisma.notification.create({
-      data: {
-        userId: assigneeId,
-        ...notificationData
-      }
+      data: { userId: assigneeId, ...notificationData }
     })
     sendNotification(assigneeId, notificationData)
 
@@ -154,7 +170,10 @@ router.put('/:id/start', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN'), a
   try {
     const id = req.params.id
 
-    const workOrder = await prisma.workOrder.findUnique({ where: { id } })
+    const workOrder = await prisma.workOrder.findUnique({
+      where: { id },
+      include: { adSlot: true }
+    })
     if (!workOrder) {
       return res.json(errorResponse('工单不存在'))
     }
@@ -168,6 +187,32 @@ router.put('/:id/start', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN'), a
       data: { status: WorkOrderStatus.IN_PROGRESS }
     })
 
+    await notifyRoles([UserRole.ADMIN], {
+      type: NotificationType.WORK_ORDER,
+      title: '工单已开始处理',
+      content: `工单「${workOrder.title}」已被开始处理`,
+      workOrderId: id
+    })
+
+    if (workOrder.applicationId) {
+      const app = await prisma.application.findUnique({
+        where: { id: workOrder.applicationId },
+        select: { applicantId: true }
+      })
+      if (app) {
+        const userNotif = {
+          type: NotificationType.WORK_ORDER,
+          title: '工单处理中',
+          content: `广告位「${workOrder.adSlot.name}」的工单已开始处理`,
+          applicationId: workOrder.applicationId
+        }
+        await prisma.notification.create({
+          data: { userId: app.applicantId, ...userNotif }
+        })
+        sendNotification(app.applicantId, userNotif)
+      }
+    }
+
     res.json(successResponse(updated, '已开始处理'))
   } catch (error: any) {
     res.json(errorResponse(error.message))
@@ -179,7 +224,10 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
     const { result } = req.body
     const id = req.params.id
 
-    const workOrder = await prisma.workOrder.findUnique({ where: { id } })
+    const workOrder = await prisma.workOrder.findUnique({
+      where: { id },
+      include: { adSlot: true }
+    })
     if (!workOrder) {
       return res.json(errorResponse('工单不存在'))
     }
@@ -201,35 +249,40 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
       }
     })
 
-    const admins = await prisma.user.findMany({
-      where: { role: UserRole.ADMIN },
-      select: { id: true }
+    await notifyRoles([UserRole.ADMIN], {
+      type: NotificationType.WORK_ORDER,
+      title: '工单已完成',
+      content: `工单「${workOrder.title}」已完成处理`,
+      workOrderId: id
     })
 
-    for (const admin of admins) {
-      const notifData = {
-        type: NotificationType.WORK_ORDER,
-        title: '工单已完成',
-        content: `工单「${workOrder.title}」已完成处理`,
-        workOrderId: id
-      }
-      await prisma.notification.create({
-        data: {
-          userId: admin.id,
-          ...notifData
-        }
+    if (workOrder.applicationId) {
+      const app = await prisma.application.findUnique({
+        where: { id: workOrder.applicationId },
+        select: { applicantId: true }
       })
-      sendNotification(admin.id, notifData)
+      if (app) {
+        const userNotif = {
+          type: NotificationType.WORK_ORDER,
+          title: '工单已完成',
+          content: `广告位「${workOrder.adSlot.name}」的工单已完成处理`,
+          applicationId: workOrder.applicationId
+        }
+        await prisma.notification.create({
+          data: { userId: app.applicantId, ...userNotif }
+        })
+        sendNotification(app.applicantId, userNotif)
+      }
     }
 
     if (updated.type === WorkOrderType.RECTIFICATION && updated.applicationId) {
       const application = await prisma.application.findUnique({
         where: { id: updated.applicationId }
       })
-      if (application && application.status === 'ACCEPTANCE_REJECTED') {
+      if (application && application.status === ApplicationStatus.ACCEPTANCE_REJECTED) {
         await prisma.application.update({
           where: { id: updated.applicationId },
-          data: { status: 'PENDING_ACCEPTANCE' }
+          data: { status: ApplicationStatus.PENDING_ACCEPTANCE }
         })
       }
     }
