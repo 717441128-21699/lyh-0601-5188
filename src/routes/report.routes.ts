@@ -184,6 +184,104 @@ router.get('/daily', authMiddleware, async (req, res) => {
   }
 })
 
+router.get('/occupancy-by-district', authMiddleware, async (req, res) => {
+  try {
+    const { date } = req.query as any
+    const targetDate = date ? dayjs(date) : dayjs()
+    const dayStart = targetDate.startOf('day').toDate()
+    const dayEnd = targetDate.endOf('day').toDate()
+
+    const allSlots = await prisma.adSlot.findMany({
+      where: { status: AdSlotStatus.ACTIVE },
+      select: { id: true, district: true }
+    })
+
+    const occupiedApps = await prisma.application.findMany({
+      where: {
+        status: { in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.DESIGN_APPROVED] },
+        startTime: { lte: dayEnd },
+        endTime: { gte: dayStart }
+      },
+      select: { adSlotId: true }
+    })
+    const occupiedSlotIds = new Set(occupiedApps.map(a => a.adSlotId))
+
+    const districtMap = new Map<string, { total: number; occupied: number }>()
+    for (const slot of allSlots) {
+      const d = slot.district || '未分区'
+      if (!districtMap.has(d)) {
+        districtMap.set(d, { total: 0, occupied: 0 })
+      }
+      const entry = districtMap.get(d)!
+      entry.total++
+      if (occupiedSlotIds.has(slot.id)) {
+        entry.occupied++
+      }
+    }
+
+    const result = Array.from(districtMap.entries()).map(([district, data]) => ({
+      district,
+      totalSlots: data.total,
+      occupiedSlots: data.occupied,
+      vacantSlots: data.total - data.occupied,
+      occupancyRate: data.total > 0 ? Math.round((data.occupied / data.total) * 10000) / 100 : 0
+    })).sort((a, b) => a.occupancyRate - b.occupancyRate)
+
+    res.json(successResponse(result))
+  } catch (error: any) {
+    res.json(errorResponse('报表操作失败，请稍后重试'))
+  }
+})
+
+router.get('/occupancy-by-type', authMiddleware, async (req, res) => {
+  try {
+    const { date } = req.query as any
+    const targetDate = date ? dayjs(date) : dayjs()
+    const dayStart = targetDate.startOf('day').toDate()
+    const dayEnd = targetDate.endOf('day').toDate()
+
+    const allSlots = await prisma.adSlot.findMany({
+      where: { status: AdSlotStatus.ACTIVE },
+      select: { id: true, type: true }
+    })
+
+    const occupiedApps = await prisma.application.findMany({
+      where: {
+        status: { in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.DESIGN_APPROVED] },
+        startTime: { lte: dayEnd },
+        endTime: { gte: dayStart }
+      },
+      select: { adSlotId: true }
+    })
+    const occupiedSlotIds = new Set(occupiedApps.map(a => a.adSlotId))
+
+    const typeMap = new Map<string, { total: number; occupied: number }>()
+    for (const slot of allSlots) {
+      const t = slot.type || '未分类'
+      if (!typeMap.has(t)) {
+        typeMap.set(t, { total: 0, occupied: 0 })
+      }
+      const entry = typeMap.get(t)!
+      entry.total++
+      if (occupiedSlotIds.has(slot.id)) {
+        entry.occupied++
+      }
+    }
+
+    const result = Array.from(typeMap.entries()).map(([type, data]) => ({
+      type,
+      totalSlots: data.total,
+      occupiedSlots: data.occupied,
+      vacantSlots: data.total - data.occupied,
+      occupancyRate: data.total > 0 ? Math.round((data.occupied / data.total) * 10000) / 100 : 0
+    })).sort((a, b) => a.occupancyRate - b.occupancyRate)
+
+    res.json(successResponse(result))
+  } catch (error: any) {
+    res.json(errorResponse('报表操作失败，请稍后重试'))
+  }
+})
+
 router.get('/range', authMiddleware, async (req, res) => {
   try {
     const { startDate, endDate } = req.query as any
@@ -392,6 +490,123 @@ router.get('/export', authMiddleware, async (req, res) => {
     res.end()
   } catch (error: any) {
     res.json(errorResponse('报表操作失败，请稍后重试'))
+  }
+})
+
+router.post('/export-monthly', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
+  try {
+    const { year, month } = req.body
+    if (!year || !month) {
+      return res.json(errorResponse('请指定年份和月份'))
+    }
+
+    const startOfMonth = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).startOf('month')
+    const endOfMonth = startOfMonth.endOf('month')
+
+    const allSlots = await prisma.adSlot.findMany({
+      where: { status: AdSlotStatus.ACTIVE },
+      select: { id: true, name: true, district: true, type: true }
+    })
+
+    const occupiedApps = await prisma.application.findMany({
+      where: {
+        status: { in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.DESIGN_APPROVED] },
+        startTime: { lte: endOfMonth.toDate() },
+        endTime: { gte: startOfMonth.toDate() }
+      },
+      select: { adSlotId: true, adSlot: { select: { name: true, district: true, type: true } } }
+    })
+    const occupiedSlotIds = new Set(occupiedApps.map(a => a.adSlotId))
+
+    const byDistrict = new Map<string, { total: number; occupied: number }>()
+    const byType = new Map<string, { total: number; occupied: number }>()
+
+    for (const slot of allSlots) {
+      const d = slot.district || '未分区'
+      if (!byDistrict.has(d)) byDistrict.set(d, { total: 0, occupied: 0 })
+      byDistrict.get(d)!.total++
+      if (occupiedSlotIds.has(slot.id)) byDistrict.get(d)!.occupied++
+
+      const t = slot.type || '未分类'
+      if (!byType.has(t)) byType.set(t, { total: 0, occupied: 0 })
+      byType.get(t)!.total++
+      if (occupiedSlotIds.has(slot.id)) byType.get(t)!.occupied++
+    }
+
+    const workbook = new ExcelJS.Workbook()
+
+    const overviewSheet = workbook.addWorksheet('月度概览')
+    overviewSheet.columns = [
+      { header: '指标', key: 'metric', width: 20 },
+      { header: '数值', key: 'value', width: 15 }
+    ]
+    overviewSheet.addRow({ metric: '报表月份', value: startOfMonth.format('YYYY-MM') })
+    overviewSheet.addRow({ metric: '广告位总数', value: allSlots.length })
+    overviewSheet.addRow({ metric: '已占用数', value: occupiedSlotIds.size })
+    overviewSheet.addRow({ metric: '空置数', value: allSlots.length - occupiedSlotIds.size })
+    overviewSheet.addRow({ metric: '总占用率(%)', value: allSlots.length > 0 ? (Math.round((occupiedSlotIds.size / allSlots.length) * 10000) / 100) : 0 })
+
+    const districtSheet = workbook.addWorksheet('按区域占用率')
+    districtSheet.columns = [
+      { header: '区域', key: 'district', width: 15 },
+      { header: '广告位总数', key: 'total', width: 12 },
+      { header: '已占用', key: 'occupied', width: 10 },
+      { header: '空置数', key: 'vacant', width: 10 },
+      { header: '占用率(%)', key: 'rate', width: 12 }
+    ]
+    for (const [district, data] of byDistrict.entries()) {
+      districtSheet.addRow({
+        district,
+        total: data.total,
+        occupied: data.occupied,
+        vacant: data.total - data.occupied,
+        rate: data.total > 0 ? Math.round((data.occupied / data.total) * 10000) / 100 : 0
+      })
+    }
+
+    const typeSheet = workbook.addWorksheet('按类型占用率')
+    typeSheet.columns = [
+      { header: '类型', key: 'type', width: 15 },
+      { header: '广告位总数', key: 'total', width: 12 },
+      { header: '已占用', key: 'occupied', width: 10 },
+      { header: '空置数', key: 'vacant', width: 10 },
+      { header: '占用率(%)', key: 'rate', width: 12 }
+    ]
+    for (const [type, data] of byType.entries()) {
+      typeSheet.addRow({
+        type,
+        total: data.total,
+        occupied: data.occupied,
+        vacant: data.total - data.occupied,
+        rate: data.total > 0 ? Math.round((data.occupied / data.total) * 10000) / 100 : 0
+      })
+    }
+
+    const slotDetailSheet = workbook.addWorksheet('广告位明细')
+    slotDetailSheet.columns = [
+      { header: '广告位名称', key: 'name', width: 20 },
+      { header: '区域', key: 'district', width: 12 },
+      { header: '类型', key: 'type', width: 12 },
+      { header: '是否占用', key: 'occupied', width: 10 }
+    ]
+    for (const slot of allSlots) {
+      slotDetailSheet.addRow({
+        name: slot.name,
+        district: slot.district,
+        type: slot.type,
+        occupied: occupiedSlotIds.has(slot.id) ? '是' : '否'
+      })
+    }
+
+    const filename = `运营月报_${startOfMonth.format('YYYY-MM')}.xlsx`
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+
+    await workbook.xlsx.write(res)
+    res.end()
+  } catch (error: any) {
+    res.json(errorResponse('月报导出失败，请稍后重试'))
   }
 })
 

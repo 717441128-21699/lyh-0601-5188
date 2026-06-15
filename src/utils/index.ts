@@ -1,6 +1,8 @@
 import dayjs from 'dayjs'
 import minMax from 'dayjs/plugin/minMax'
 dayjs.extend(minMax)
+import customParseFormat from 'dayjs/plugin/customParseFormat'
+dayjs.extend(customParseFormat)
 import { v4 as uuidv4 } from 'uuid'
 
 export const generateCode = (prefix: string): string => {
@@ -39,7 +41,9 @@ export const errorResponse = (message: string, code = -1) => {
 
 export const isValidDate = (value: any): boolean => {
   if (value === null || value === undefined || value === '') return false
-  const d = dayjs(value)
+  if (typeof value !== 'string') return false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const d = dayjs(value, 'YYYY-MM-DD', true)
   return d.isValid()
 }
 
@@ -50,14 +54,20 @@ export const validateDateRange = (startTime: any, endTime: any): { valid: boolea
   if (!endTime || endTime === '') {
     return { valid: false, error: '结束时间不能为空' }
   }
-  if (!isValidDate(startTime)) {
-    return { valid: false, error: '开始时间格式不正确，请使用 YYYY-MM-DD 格式' }
+  if (typeof startTime !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(startTime)) {
+    return { valid: false, error: '开始时间格式不正确，请使用 YYYY-MM-DD 格式（如 2026-06-01）' }
   }
-  if (!isValidDate(endTime)) {
-    return { valid: false, error: '结束时间格式不正确，请使用 YYYY-MM-DD 格式' }
+  if (typeof endTime !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(endTime)) {
+    return { valid: false, error: '结束时间格式不正确，请使用 YYYY-MM-DD 格式（如 2026-06-01）' }
   }
-  const s = dayjs(startTime)
-  const e = dayjs(endTime)
+  const s = dayjs(startTime, 'YYYY-MM-DD', true)
+  if (!s.isValid()) {
+    return { valid: false, error: '开始时间不是有效日期，请检查（如 2026-02-30 不存在）' }
+  }
+  const e = dayjs(endTime, 'YYYY-MM-DD', true)
+  if (!e.isValid()) {
+    return { valid: false, error: '结束时间不是有效日期，请检查（如 2026-02-30 不存在）' }
+  }
   if (e.isBefore(s, 'day')) {
     return { valid: false, error: '结束时间不能早于开始时间' }
   }

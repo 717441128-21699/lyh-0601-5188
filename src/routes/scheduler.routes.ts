@@ -6,7 +6,8 @@ import {
   runOverdueProcessing,
   runMonthlyBillGeneration,
   runDailyReportGeneration,
-  runAutoInspectionGeneration
+  runAutoInspectionGeneration,
+  runWorkOrderOverdueCheck
 } from '../services/scheduler.service'
 
 const router = Router()
@@ -24,6 +25,15 @@ router.post('/process-overdue', authMiddleware, roleMiddleware('ADMIN'), async (
   try {
     const result = await runOverdueProcessing()
     res.json(successResponse(result, `逾期处理完成：处理${result.processed}个，生成${result.demolitionOrders}个拆除工单`))
+  } catch (error: any) {
+    res.json(errorResponse('任务执行失败，请稍后重试'))
+  }
+})
+
+router.post('/check-work-order-overdue', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
+  try {
+    const result = await runWorkOrderOverdueCheck()
+    res.json(successResponse(result, `工单超期检查完成：${result.overdueCount}个超期，发送${result.notified}条通知`))
   } catch (error: any) {
     res.json(errorResponse('任务执行失败，请稍后重试'))
   }
@@ -62,6 +72,7 @@ router.post('/run-all', authMiddleware, roleMiddleware('ADMIN'), async (req, res
 
     results.expirationCheck = await runExpirationCheck()
     results.overdueProcessing = await runOverdueProcessing()
+    results.workOrderOverdueCheck = await runWorkOrderOverdueCheck()
     results.monthlyBills = await runMonthlyBillGeneration()
     results.dailyReport = await runDailyReportGeneration()
     results.inspections = await runAutoInspectionGeneration()

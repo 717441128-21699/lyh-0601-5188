@@ -4,8 +4,20 @@ import { successResponse, errorResponse, generateCode } from '../utils'
 import { authMiddleware, roleMiddleware, AuthRequest } from '../middleware/auth'
 import { sendNotification } from '../services/notification.service'
 import { WorkOrderStatus, NotificationType, UserRole, WorkOrderType, ApplicationStatus } from '../types/enums'
+import dayjs from 'dayjs'
 
 const router = Router()
+
+const PRIORITY_DEADLINE_DAYS: Record<number, number> = {
+  3: 1,
+  2: 3,
+  1: 7
+}
+
+const getAutoDeadline = (priority: number): Date => {
+  const days = PRIORITY_DEADLINE_DAYS[priority] || 7
+  return dayjs().add(days, 'day').endOf('day').toDate()
+}
 
 const notifyRoles = async (roles: string[], notifData: any) => {
   const users = await prisma.user.findMany({
@@ -22,13 +34,24 @@ const notifyRoles = async (roles: string[], notifData: any) => {
 
 router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { type, status, adSlotId, assigneeId, page = 1, pageSize = 10 } = req.query as any
+    const { type, status, adSlotId, assigneeId, overdue, upcoming, page = 1, pageSize = 10 } = req.query as any
 
     const where: any = {}
     if (type) where.type = type
     if (status) where.status = status
     if (adSlotId) where.adSlotId = adSlotId
     if (assigneeId) where.assigneeId = assigneeId
+
+    if (overdue === 'true' || overdue === '1') {
+      where.status = { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] }
+      where.deadline = { lt: new Date() }
+    } else if (upcoming === 'true' || upcoming === '1') {
+      where.status = { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] }
+      where.deadline = {
+        gte: new Date(),
+        lte: dayjs().add(3, 'day').endOf('day').toDate()
+      }
+    }
 
     if (req.user?.role === UserRole.INSPECTOR) {
       where.OR = [
@@ -52,8 +75,19 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       orderBy: { createdAt: 'desc' }
     })
 
+    const enrichedList = list.map(wo => {
+      const isOverdue = wo.status !== WorkOrderStatus.COMPLETED && wo.deadline && dayjs(wo.deadline).isBefore(dayjs())
+      const isUpcoming = wo.status !== WorkOrderStatus.COMPLETED && wo.deadline && !isOverdue && dayjs(wo.deadline).isBefore(dayjs().add(3, 'day'))
+      return {
+        ...wo,
+        isOverdue,
+        isUpcoming,
+        remainingDays: wo.deadline ? Math.max(dayjs(wo.deadline).diff(dayjs(), 'day'), -999) : null
+      }
+    })
+
     res.json(successResponse({
-      list,
+      list: enrichedList,
       total,
       page: parseInt(page),
       pageSize: parseInt(pageSize)
@@ -70,6 +104,23 @@ router.get('/stats/summary', authMiddleware, async (req, res) => {
     const inProgress = await prisma.workOrder.count({ where: { status: WorkOrderStatus.IN_PROGRESS } })
     const completed = await prisma.workOrder.count({ where: { status: WorkOrderStatus.COMPLETED } })
 
+    const overdueCount = await prisma.workOrder.count({
+      where: {
+        status: { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] },
+        deadline: { lt: new Date() }
+      }
+    })
+
+    const upcomingCount = await prisma.workOrder.count({
+      where: {
+        status: { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] },
+        deadline: {
+          gte: new Date(),
+          lte: dayjs().add(3, 'day').endOf('day').toDate()
+        }
+      }
+    })
+
     const byType = await prisma.workOrder.groupBy({
       by: ['type'],
       _count: { type: true }
@@ -80,10 +131,60 @@ router.get('/stats/summary', authMiddleware, async (req, res) => {
       pending,
       inProgress,
       completed,
+      overdue: overdueCount,
+      upcoming: upcomingCount,
       byType
     }))
   } catch (error: any) {
     res.json(errorResponse('工单统计失败，请稍后重试'))
+  }
+})
+
+router.post('/check-overdue', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
+  try {
+    const overdueOrders = await prisma.workOrder.findMany({
+      where: {
+        status: { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] },
+        deadline: { lt: new Date() }
+      },
+      include: {
+        assignee: { select: { id: true, name: true } },
+        adSlot: true
+      }
+    })
+
+    let notified = 0
+    for (const order of overdueOrders) {
+      const todayStr = dayjs().format('YYYY-MM-DD')
+      const existingNotif = await prisma.notification.findFirst({
+        where: {
+          type: NotificationType.WORK_ORDER,
+          workOrderId: order.id,
+          content: { contains: '已超期' },
+          createdAt: { gte: dayjs().startOf('day').toDate() }
+        }
+      })
+      if (!existingNotif) {
+        const notifData = {
+          type: NotificationType.WORK_ORDER,
+          title: '工单超期提醒',
+          content: `工单「${order.title}」已超期，请尽快处理`,
+          workOrderId: order.id
+        }
+        await notifyRoles([UserRole.ADMIN], notifData)
+        if (order.assigneeId) {
+          await prisma.notification.create({
+            data: { userId: order.assigneeId, ...notifData }
+          })
+          sendNotification(order.assigneeId, notifData)
+        }
+        notified++
+      }
+    }
+
+    res.json(successResponse({ overdueCount: overdueOrders.length, notified }, `检查完成：${overdueOrders.length}个超期工单，发送${notified}条通知`))
+  } catch (error: any) {
+    res.json(errorResponse('超期检查失败，请稍后重试'))
   }
 })
 
@@ -106,7 +207,15 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.json(errorResponse('工单不存在'))
     }
 
-    res.json(successResponse(workOrder))
+    const isOverdue = workOrder.status !== WorkOrderStatus.COMPLETED && workOrder.deadline && dayjs(workOrder.deadline).isBefore(dayjs())
+    const isUpcoming = workOrder.status !== WorkOrderStatus.COMPLETED && workOrder.deadline && !isOverdue && dayjs(workOrder.deadline).isBefore(dayjs().add(3, 'day'))
+
+    res.json(successResponse({
+      ...workOrder,
+      isOverdue,
+      isUpcoming,
+      remainingDays: workOrder.deadline ? Math.max(dayjs(workOrder.deadline).diff(dayjs(), 'day'), -999) : null
+    }))
   } catch (error: any) {
     res.json(errorResponse('工单操作失败，请稍后重试'))
   }
@@ -115,6 +224,9 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
   try {
     const { type, title, description, adSlotId, applicationId, assigneeId, priority, deadline } = req.body
+
+    const p = priority || 1
+    const autoDeadline = deadline ? new Date(deadline) : getAutoDeadline(p)
 
     const workOrder = await prisma.workOrder.create({
       data: {
@@ -125,8 +237,8 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
         adSlotId,
         applicationId: applicationId || null,
         assigneeId: assigneeId || null,
-        priority: priority || 1,
-        deadline: deadline ? new Date(deadline) : null,
+        priority: p,
+        deadline: autoDeadline,
         status: WorkOrderStatus.PENDING
       },
       include: { adSlot: true }
@@ -136,7 +248,7 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
       const notificationData = {
         type: NotificationType.WORK_ORDER,
         title: '新的工单指派',
-        content: `您有新的工单：${title}`,
+        content: `您有新的工单：${title}，处理期限：${dayjs(autoDeadline).format('YYYY-MM-DD')}`,
         workOrderId: workOrder.id
       }
       await prisma.notification.create({
@@ -148,7 +260,7 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
     await notifyRoles([UserRole.ADMIN], {
       type: NotificationType.WORK_ORDER,
       title: '新工单已创建',
-      content: `工单「${title}」已创建`,
+      content: `工单「${title}」已创建，处理期限：${dayjs(autoDeadline).format('YYYY-MM-DD')}`,
       workOrderId: workOrder.id
     })
 

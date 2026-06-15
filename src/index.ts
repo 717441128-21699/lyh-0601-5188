@@ -16,7 +16,8 @@ import {
   runOverdueProcessing,
   runMonthlyBillGeneration,
   runDailyReportGeneration,
-  runAutoInspectionGeneration
+  runAutoInspectionGeneration,
+  runWorkOrderOverdueCheck
 } from './services/scheduler.service'
 
 import authRoutes from './routes/auth.routes'
@@ -94,9 +95,10 @@ const startScheduledTasks = () => {
       }
 
       if (hour === 9 && minute === 0) {
-        console.log('[定时任务 09:00] 到期提醒 + 逾期处理')
+        console.log('[定时任务 09:00] 到期提醒 + 逾期处理 + 工单超期检查')
         await runExpirationCheck()
         await runOverdueProcessing()
+        await runWorkOrderOverdueCheck()
       }
 
       if (hour === 23 && minute === 50) {

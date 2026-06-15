@@ -280,3 +280,55 @@ export const runAutoInspectionGeneration = async (): Promise<{ generated: number
 
   return { generated }
 }
+
+export const runWorkOrderOverdueCheck = async (): Promise<{ overdueCount: number; notified: number }> => {
+  const overdueOrders = await prisma.workOrder.findMany({
+    where: {
+      status: { in: [WorkOrderStatus.PENDING, WorkOrderStatus.IN_PROGRESS] },
+      deadline: { lt: new Date() }
+    },
+    include: {
+      assignee: { select: { id: true, name: true } },
+      adSlot: true
+    }
+  })
+
+  let notified = 0
+  for (const order of overdueOrders) {
+    const existingNotif = await prisma.notification.findFirst({
+      where: {
+        type: NotificationType.WORK_ORDER,
+        workOrderId: order.id,
+        content: { contains: '已超期' },
+        createdAt: { gte: dayjs().startOf('day').toDate() }
+      }
+    })
+    if (!existingNotif) {
+      const notifData = {
+        type: NotificationType.WORK_ORDER,
+        title: '工单超期提醒',
+        content: `工单「${order.title}」已超期，请尽快处理`,
+        workOrderId: order.id
+      }
+      const admins = await prisma.user.findMany({
+        where: { role: UserRole.ADMIN },
+        select: { id: true }
+      })
+      for (const admin of admins) {
+        await prisma.notification.create({
+          data: { userId: admin.id, ...notifData }
+        })
+        sendNotification(admin.id, notifData)
+      }
+      if (order.assigneeId) {
+        await prisma.notification.create({
+          data: { userId: order.assigneeId, ...notifData }
+        })
+        sendNotification(order.assigneeId, notifData)
+      }
+      notified++
+    }
+  }
+
+  return { overdueCount: overdueOrders.length, notified }
+}
