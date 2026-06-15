@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import prisma from '../prisma'
-import { successResponse, errorResponse, generateCode, calculateDurationDays, calculateFee } from '../utils'
+import { successResponse, errorResponse, generateCode, calculateDurationDays, calculateFee, validateDateRange } from '../utils'
 import { authMiddleware, roleMiddleware, AuthRequest } from '../middleware/auth'
 import { sendNotification } from '../services/notification.service'
 import { ApplicationStatus, NotificationType, UserRole } from '../types/enums'
@@ -97,22 +97,22 @@ router.post('/calculate-fee', authMiddleware, async (req, res) => {
       return res.json(errorResponse('广告位不存在'))
     }
 
-    const days = calculateDurationDays(new Date(startTime), new Date(endTime))
-    if (days <= 0) {
-      return res.json(errorResponse('结束时间必须晚于开始时间'))
+    const dateCheck = validateDateRange(startTime, endTime)
+    if (!dateCheck.valid) {
+      return res.json(errorResponse(dateCheck.error!))
     }
 
-    const hasConflict = await checkConflict(adSlotId, new Date(startTime), new Date(endTime))
-    const totalFee = calculateFee(parseFloat(slot.dailyRate.toString()), days)
+    const hasConflict = await checkConflict(adSlotId, dateCheck.start!, dateCheck.end!)
+    const totalFee = calculateFee(parseFloat(slot.dailyRate.toString()), dateCheck.days!)
 
     res.json(successResponse({
       dailyRate: slot.dailyRate,
-      days,
+      days: dateCheck.days,
       totalFee,
       hasConflict
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('费用预估失败，请稍后重试'))
   }
 })
 
@@ -125,10 +125,15 @@ router.post('/check-conflict', authMiddleware, async (req, res) => {
       return res.json(errorResponse('广告位不存在'))
     }
 
-    const hasConflict = await checkConflict(adSlotId, new Date(startTime), new Date(endTime))
+    const dateCheck = validateDateRange(startTime, endTime)
+    if (!dateCheck.valid) {
+      return res.json(errorResponse(dateCheck.error!))
+    }
+
+    const hasConflict = await checkConflict(adSlotId, dateCheck.start!, dateCheck.end!)
     
     const alternatives = hasConflict 
-      ? await findAlternativeSlots(slot.type, slot.district, slot.area, new Date(startTime), new Date(endTime))
+      ? await findAlternativeSlots(slot.type, slot.district, slot.area, dateCheck.start!, dateCheck.end!)
       : []
 
     res.json(successResponse({
@@ -136,7 +141,7 @@ router.post('/check-conflict', authMiddleware, async (req, res) => {
       alternatives
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('冲突检测失败，请稍后重试'))
   }
 })
 
@@ -144,17 +149,22 @@ router.post('/alternatives', authMiddleware, async (req, res) => {
   try {
     const { type, district, minArea, startTime, endTime } = req.body
 
+    const dateCheck = validateDateRange(startTime, endTime)
+    if (!dateCheck.valid) {
+      return res.json(errorResponse(dateCheck.error!))
+    }
+
     const alternatives = await findAlternativeSlots(
       type || '',
       district || '',
       minArea || 0,
-      new Date(startTime),
-      new Date(endTime)
+      dateCheck.start!,
+      dateCheck.end!
     )
 
     res.json(successResponse(alternatives))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('获取替代广告位失败，请稍后重试'))
   }
 })
 
@@ -199,7 +209,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('申请操作失败，请稍后重试'))
   }
 })
 
@@ -223,7 +233,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     res.json(successResponse(application))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('申请操作失败，请稍后重试'))
   }
 })
 
@@ -232,13 +242,23 @@ router.post('/', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN'), async (r
     const { adSlotId, adTitle, adContent, startTime, endTime } = req.body
     const applicantId = req.user?.id
 
+    if (!adTitle || adTitle.toString().trim() === '') {
+      return res.json(errorResponse('广告标题不能为空'))
+    }
+
     const slot = await prisma.adSlot.findUnique({ where: { id: adSlotId } })
     if (!slot) {
       return res.json(errorResponse('广告位不存在'))
     }
 
-    const st = new Date(startTime)
-    const et = new Date(endTime)
+    const dateCheck = validateDateRange(startTime, endTime)
+    if (!dateCheck.valid) {
+      return res.json(errorResponse(dateCheck.error!))
+    }
+    const st = dateCheck.start!
+    const et = dateCheck.end!
+    const days = dateCheck.days!
+
     const hasConflict = await checkConflict(adSlotId, st, et)
 
     if (hasConflict) {
@@ -250,16 +270,22 @@ router.post('/', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN'), async (r
       })
     }
 
-    const days = calculateDurationDays(st, et)
-    const totalFee = calculateFee(parseFloat(slot.dailyRate.toString()), days)
+    const dailyRate = parseFloat(slot.dailyRate.toString())
+    if (!isFinite(dailyRate) || dailyRate <= 0) {
+      return res.json(errorResponse('广告位日费率配置异常，请联系管理员'))
+    }
+    const totalFee = calculateFee(dailyRate, days)
+    if (!isFinite(totalFee) || totalFee <= 0) {
+      return res.json(errorResponse('费用计算异常，请检查投放日期'))
+    }
 
     const application = await prisma.application.create({
       data: {
         code: generateCode('AP'),
         applicantId: applicantId!,
         adSlotId,
-        adTitle,
-        adContent,
+        adTitle: adTitle.toString().trim(),
+        adContent: adContent ? adContent.toString().trim() : '',
         startTime: st,
         endTime: et,
         durationDays: days,
@@ -293,7 +319,7 @@ router.post('/', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN'), async (r
 
     res.json(successResponse(application, '申请提交成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('申请提交失败，请检查后重试'))
   }
 })
 
@@ -344,7 +370,7 @@ router.put('/:id/review', authMiddleware, roleMiddleware('ADMIN'), async (req, r
 
     res.json(successResponse(updated, approved ? '审核通过' : '已拒绝'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('申请操作失败，请稍后重试'))
   }
 })
 
@@ -364,7 +390,7 @@ router.put('/:id/cancel', authMiddleware, async (req: AuthRequest, res) => {
       return res.json(errorResponse('无权限操作'))
     }
 
-    if (![ApplicationStatus.PENDING_REVIEW, ApplicationStatus.PENDING_DESIGN, ApplicationStatus.DESIGN_REJECTED].includes(application.status)) {
+    if (!([ApplicationStatus.PENDING_REVIEW, ApplicationStatus.PENDING_DESIGN, ApplicationStatus.DESIGN_REJECTED] as string[]).includes(application.status)) {
       return res.json(errorResponse('当前状态不允许取消'))
     }
 
@@ -401,7 +427,7 @@ router.put('/:id/cancel', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(successResponse(updated, '已取消申请'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('申请操作失败，请稍后重试'))
   }
 })
 

@@ -153,7 +153,7 @@ router.post('/generate-daily', authMiddleware, roleMiddleware('ADMIN'), async (r
 
     res.json(successResponse(report, '报表生成成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('报表操作失败，请稍后重试'))
   }
 })
 
@@ -180,7 +180,7 @@ router.get('/daily', authMiddleware, async (req, res) => {
 
     res.json(successResponse(report))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('报表操作失败，请稍后重试'))
   }
 })
 
@@ -229,7 +229,7 @@ router.get('/range', authMiddleware, async (req, res) => {
 
     res.json(successResponse(result))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('报表操作失败，请稍后重试'))
   }
 })
 
@@ -303,7 +303,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
       unpaidBills
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('报表操作失败，请稍后重试'))
   }
 })
 
@@ -391,7 +391,7 @@ router.get('/export', authMiddleware, async (req, res) => {
     await workbook.xlsx.write(res)
     res.end()
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('报表操作失败，请稍后重试'))
   }
 })
 

@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import prisma from '../prisma'
-import { successResponse, errorResponse, generateCode } from '../utils'
+import { successResponse, errorResponse, generateCode, parseBillMonth, calcMonthDays } from '../utils'
 import { authMiddleware, roleMiddleware, AuthRequest } from '../middleware/auth'
 import { sendNotification } from '../services/notification.service'
+import { generateMonthlyBills } from '../services/billing.service'
 import { BillStatus, NotificationType, UserRole, ApplicationStatus } from '../types/enums'
 import dayjs from 'dayjs'
 import minMax from 'dayjs/plugin/minMax'
@@ -11,101 +12,25 @@ import ExcelJS from 'exceljs'
 
 const router = Router()
 
-const calcOverlapDays = (appStart: Date, appEnd: Date, monthStart: Date, monthEnd: Date): number => {
-  const overlapStart = dayjs.max(dayjs(appStart), dayjs(monthStart))
-  const overlapEnd = dayjs.min(dayjs(appEnd), dayjs(monthEnd))
-  const days = overlapEnd.diff(overlapStart, 'day') + 1
-  return Math.max(days, 0)
-}
-
 router.post('/generate-monthly', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async (req, res) => {
   try {
     const { billMonth } = req.body
-
-    if (!billMonth) {
-      return res.json(errorResponse('请指定账单月份'))
+    const parsed = parseBillMonth(billMonth)
+    if (!parsed.ok) {
+      return res.json(errorResponse(parsed.error!))
     }
 
-    const [year, month] = billMonth.split('-').map(Number)
-    const monthStart = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).startOf('month').toDate()
-    const monthEnd = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).endOf('month').toDate()
-
-    const billableApps = await prisma.application.findMany({
-      where: {
-        status: {
-          in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.EXPIRED, ApplicationStatus.CANCELLED]
-        },
-        startTime: { lte: monthEnd },
-        endTime: { gte: monthStart }
-      },
-      include: {
-        adSlot: true,
-        applicant: {
-          select: { id: true, name: true, username: true }
-        }
-      }
-    })
-
-    const generatedBills: any[] = []
-
-    for (const app of billableApps) {
-      const occupiedDays = calcOverlapDays(app.startTime, app.endTime, monthStart, monthEnd)
-      if (occupiedDays <= 0) continue
-
-      const dailyRate = parseFloat(app.adSlot.dailyRate.toString())
-      const amount = dailyRate * occupiedDays
-
-      const existingBill = await prisma.bill.findFirst({
-        where: { applicationId: app.id, billMonth }
-      })
-
-      if (!existingBill) {
-        const bill = await prisma.bill.create({
-          data: {
-            code: generateCode('BL'),
-            applicationId: app.id,
-            billMonth,
-            occupiedDays,
-            amount,
-            status: BillStatus.UNPAID
-          },
-          include: {
-            application: {
-              include: {
-                adSlot: true,
-                applicant: { select: { id: true, name: true, username: true } }
-              }
-            }
-          }
-        })
-        generatedBills.push(bill)
-
-        const notificationData = {
-          type: NotificationType.BILL,
-          title: '新的账单',
-          content: `您有新的账单：${billMonth}月，占用${occupiedDays}天，金额 ¥${amount.toFixed(2)}`,
-          applicationId: app.id
-        }
-
-        await prisma.notification.create({
-          data: { userId: app.applicantId, ...notificationData }
-        })
-        sendNotification(app.applicantId, notificationData)
-      } else if (existingBill.occupiedDays !== occupiedDays || parseFloat(existingBill.amount.toString()) !== amount) {
-        const updated = await prisma.bill.update({
-          where: { id: existingBill.id },
-          data: { occupiedDays, amount }
-        })
-        generatedBills.push(updated)
-      }
-    }
+    const result = await generateMonthlyBills(billMonth)
 
     res.json(successResponse({
-      count: generatedBills.length,
-      bills: generatedBills
-    }, `生成了 ${generatedBills.length} 条账单`))
+      count: result.count,
+      created: result.created,
+      updated: result.updated,
+      skipped: result.skipped,
+      bills: result.bills
+    }, `账单生成完成：新建${result.created}条，更新${result.updated}条，跳过${result.skipped}条`))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('账单生成失败，请检查后重试'))
   }
 })
 
@@ -146,7 +71,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('账单操作失败，请稍后重试'))
   }
 })
 
@@ -170,7 +95,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     res.json(successResponse(bill))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('账单操作失败，请稍后重试'))
   }
 })
 
@@ -236,7 +161,7 @@ router.put('/:id/pay', authMiddleware, roleMiddleware('ADVERTISER', 'ADMIN', 'FI
 
     res.json(successResponse(updated, '支付成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('账单操作失败，请稍后重试'))
   }
 })
 
@@ -314,7 +239,7 @@ router.post('/export', authMiddleware, roleMiddleware('ADMIN', 'FINANCE'), async
     await workbook.xlsx.write(res)
     res.end()
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('账单操作失败，请稍后重试'))
   }
 })
 

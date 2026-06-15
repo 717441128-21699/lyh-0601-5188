@@ -8,6 +8,7 @@ import {
 import dayjs from 'dayjs'
 import minMax from 'dayjs/plugin/minMax'
 dayjs.extend(minMax)
+import { generateMonthlyBills } from './billing.service'
 
 export const runExpirationCheck = async (): Promise<{ checked: number; notified: number }> => {
   const targetDate = dayjs().add(30, 'day').toDate()
@@ -139,62 +140,14 @@ export const runOverdueProcessing = async (): Promise<{ processed: number; demol
   return { processed: overdue.length, demolitionOrders }
 }
 
-export const runMonthlyBillGeneration = async (): Promise<{ generated: number }> => {
+export const runMonthlyBillGeneration = async (): Promise<{ generated: number; created: number; updated: number }> => {
   const billMonth = dayjs().subtract(1, 'month').format('YYYY-MM')
-  const [year, month] = billMonth.split('-').map(Number)
-  const monthStart = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).startOf('month').toDate()
-  const monthEnd = dayjs(`${year}-${String(month).padStart(2, '0')}-01`).endOf('month').toDate()
-
-  const apps = await prisma.application.findMany({
-    where: {
-      status: {
-        in: [ApplicationStatus.PUBLISHED, ApplicationStatus.ACCEPTED, ApplicationStatus.EXPIRED, ApplicationStatus.CANCELLED]
-      },
-      startTime: { lte: monthEnd },
-      endTime: { gte: monthStart }
-    },
-    include: { adSlot: true }
-  })
-
-  let generated = 0
-  for (const app of apps) {
-    const overlapStart = dayjs.max(dayjs(app.startTime), dayjs(monthStart))
-    const overlapEnd = dayjs.min(dayjs(app.endTime), dayjs(monthEnd))
-    const days = overlapEnd.diff(overlapStart, 'day') + 1
-    if (days <= 0) continue
-
-    const existing = await prisma.bill.findFirst({
-      where: { applicationId: app.id, billMonth }
-    })
-
-    if (!existing) {
-      const amount = parseFloat(app.adSlot.dailyRate.toString()) * days
-      await prisma.bill.create({
-        data: {
-          code: generateCode('BL'),
-          applicationId: app.id,
-          billMonth,
-          occupiedDays: days,
-          amount,
-          status: 'UNPAID'
-        }
-      })
-
-      const notifData = {
-        type: NotificationType.BILL,
-        title: '新的月度账单',
-        content: `您有新的账单：${billMonth}月，占用${days}天，金额 ¥${amount.toFixed(2)}`,
-        applicationId: app.id
-      }
-      await prisma.notification.create({
-        data: { userId: app.applicantId, ...notifData }
-      })
-      sendNotification(app.applicantId, notifData)
-      generated++
-    }
+  try {
+    const result = await generateMonthlyBills(billMonth)
+    return { generated: result.count, created: result.created, updated: result.updated }
+  } catch (e) {
+    return { generated: 0, created: 0, updated: 0 }
   }
-
-  return { generated }
 }
 
 export const runDailyReportGeneration = async (): Promise<{ generated: boolean }> => {

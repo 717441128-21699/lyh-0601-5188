@@ -40,7 +40,7 @@ router.post('/login', async (req, res) => {
       }
     }, '登录成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('认证失败，请检查后重试'))
   }
 })
 
@@ -60,7 +60,7 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     })
     res.json(successResponse(user))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('认证失败，请检查后重试'))
   }
 })
 

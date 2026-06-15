@@ -34,7 +34,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('通知操作失败，请稍后重试'))
   }
 })
 
@@ -48,7 +48,7 @@ router.get('/unread-count', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(successResponse({ count }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('通知操作失败，请稍后重试'))
   }
 })
 
@@ -73,7 +73,7 @@ router.put('/:id/read', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(successResponse(updated, '已标记为已读'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('通知操作失败，请稍后重试'))
   }
 })
 
@@ -88,7 +88,7 @@ router.put('/read-all', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(successResponse(null, '全部标记为已读'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('通知操作失败，请稍后重试'))
   }
 })
 
@@ -110,7 +110,7 @@ router.delete('/:id', authMiddleware, async (req: AuthRequest, res) => {
 
     res.json(successResponse(null, '删除成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('通知操作失败，请稍后重试'))
   }
 })
 

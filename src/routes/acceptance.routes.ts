@@ -149,7 +149,7 @@ router.post('/upload/:applicationId', authMiddleware, roleMiddleware('INSPECTOR'
       message: passed ? '验收通过' : '验收未通过，已生成整改工单'
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('验收操作失败，请稍后重试'))
   }
 })
 
@@ -189,7 +189,7 @@ router.post('/retry/:applicationId', authMiddleware, roleMiddleware('INSPECTOR',
 
     res.json(successResponse(updated, '已重置为待验收状态'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('验收操作失败，请稍后重试'))
   }
 })
 

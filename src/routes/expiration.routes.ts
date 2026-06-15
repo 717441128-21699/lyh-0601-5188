@@ -73,7 +73,7 @@ router.post('/check-expiring', authMiddleware, roleMiddleware('ADMIN'), async (r
       notificationsSent: notifications.length
     }, `发现 ${expiringApplications.length} 个即将到期的广告`))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('到期管理操作失败，请稍后重试'))
   }
 })
 
@@ -138,7 +138,7 @@ router.post('/renew/:applicationId', authMiddleware, roleMiddleware('ADVERTISER'
 
     res.json(successResponse(newApplication, '续费申请已提交'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('到期管理操作失败，请稍后重试'))
   }
 })
 
@@ -241,7 +241,7 @@ router.post('/process-overdue', authMiddleware, roleMiddleware('ADMIN'), async (
       results
     }, `处理了 ${overdueApplications.length} 个逾期广告`))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('到期管理操作失败，请稍后重试'))
   }
 })
 
@@ -285,7 +285,7 @@ router.get('/expiring/list', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('到期管理操作失败，请稍后重试'))
   }
 })
 

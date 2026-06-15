@@ -54,7 +54,7 @@ router.post('/upload/:applicationId', authMiddleware, upload.single('design'), a
       return res.json(errorResponse('无权限操作'))
     }
 
-    if (![ApplicationStatus.PENDING_DESIGN, ApplicationStatus.DESIGN_REJECTED].includes(application.status)) {
+    if (!([ApplicationStatus.PENDING_DESIGN, ApplicationStatus.DESIGN_REJECTED] as string[]).includes(application.status)) {
       return res.json(errorResponse('当前状态不允许上传设计图'))
     }
 
@@ -138,7 +138,7 @@ router.post('/upload/:applicationId', authMiddleware, upload.single('design'), a
       compliance: complianceResult
     }, complianceResult.compliant ? '设计图审核通过' : '设计图审核不通过'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('设计稿操作失败，请稍后重试'))
   }
 })
 
@@ -193,7 +193,7 @@ router.post('/recheck/:applicationId', authMiddleware, roleMiddleware('ADMIN'), 
 
     res.json(successResponse(updated, approved ? '审核通过' : '已拒绝'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('设计稿操作失败，请稍后重试'))
   }
 })
 

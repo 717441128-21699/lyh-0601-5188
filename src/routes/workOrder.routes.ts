@@ -59,7 +59,31 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('查询工单列表失败，请稍后重试'))
+  }
+})
+
+router.get('/stats/summary', authMiddleware, async (req, res) => {
+  try {
+    const total = await prisma.workOrder.count()
+    const pending = await prisma.workOrder.count({ where: { status: WorkOrderStatus.PENDING } })
+    const inProgress = await prisma.workOrder.count({ where: { status: WorkOrderStatus.IN_PROGRESS } })
+    const completed = await prisma.workOrder.count({ where: { status: WorkOrderStatus.COMPLETED } })
+
+    const byType = await prisma.workOrder.groupBy({
+      by: ['type'],
+      _count: { type: true }
+    })
+
+    res.json(successResponse({
+      total,
+      pending,
+      inProgress,
+      completed,
+      byType
+    }))
+  } catch (error: any) {
+    res.json(errorResponse('工单统计失败，请稍后重试'))
   }
 })
 
@@ -84,7 +108,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     res.json(successResponse(workOrder))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('工单操作失败，请稍后重试'))
   }
 })
 
@@ -130,7 +154,7 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
 
     res.json(successResponse(workOrder, '工单创建成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('工单操作失败，请稍后重试'))
   }
 })
 
@@ -162,7 +186,7 @@ router.put('/:id/assign', authMiddleware, roleMiddleware('ADMIN'), async (req, r
 
     res.json(successResponse(updated, '指派成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('工单操作失败，请稍后重试'))
   }
 })
 
@@ -215,7 +239,7 @@ router.put('/:id/start', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN'), a
 
     res.json(successResponse(updated, '已开始处理'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('工单操作失败，请稍后重试'))
   }
 })
 
@@ -289,31 +313,7 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
 
     res.json(successResponse(updated, '工单已完成'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
-  }
-})
-
-router.get('/stats/summary', authMiddleware, async (req, res) => {
-  try {
-    const total = await prisma.workOrder.count()
-    const pending = await prisma.workOrder.count({ where: { status: WorkOrderStatus.PENDING } })
-    const inProgress = await prisma.workOrder.count({ where: { status: WorkOrderStatus.IN_PROGRESS } })
-    const completed = await prisma.workOrder.count({ where: { status: WorkOrderStatus.COMPLETED } })
-
-    const byType = await prisma.workOrder.groupBy({
-      by: ['type'],
-      _count: { type: true }
-    })
-
-    res.json(successResponse({
-      total,
-      pending,
-      inProgress,
-      completed,
-      byType
-    }))
-  } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('工单操作失败，请稍后重试'))
   }
 })
 

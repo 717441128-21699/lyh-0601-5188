@@ -37,7 +37,7 @@ router.get('/', authMiddleware, async (req, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('广告位操作失败，请稍后重试'))
   }
 })
 
@@ -74,7 +74,35 @@ router.get('/available', authMiddleware, async (req, res) => {
 
     res.json(successResponse(availableSlots))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('查询可用广告位失败，请稍后重试'))
+  }
+})
+
+router.get('/stats/summary', authMiddleware, async (req, res) => {
+  try {
+    const total = await prisma.adSlot.count()
+    const active = await prisma.adSlot.count({ where: { status: AdSlotStatus.ACTIVE } })
+    const maintenance = await prisma.adSlot.count({ where: { status: AdSlotStatus.MAINTENANCE } })
+    
+    const byType = await prisma.adSlot.groupBy({
+      by: ['type'],
+      _count: { type: true }
+    })
+
+    const byDistrict = await prisma.adSlot.groupBy({
+      by: ['district'],
+      _count: { district: true }
+    })
+
+    res.json(successResponse({
+      total,
+      active,
+      maintenance,
+      byType,
+      byDistrict
+    }))
+  } catch (error: any) {
+    res.json(errorResponse('广告位统计失败，请稍后重试'))
   }
 })
 
@@ -88,7 +116,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
     }
     res.json(successResponse(slot))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('获取广告位详情失败，请稍后重试'))
   }
 })
 
@@ -116,7 +144,7 @@ router.post('/', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => {
 
     res.json(successResponse(slot, '创建成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('创建广告位失败，请检查后重试'))
   }
 })
 
@@ -147,7 +175,7 @@ router.put('/:id', authMiddleware, roleMiddleware('ADMIN'), async (req, res) => 
 
     res.json(successResponse(slot, '更新成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('更新广告位失败，请检查后重试'))
   }
 })
 
@@ -156,35 +184,7 @@ router.delete('/:id', authMiddleware, roleMiddleware('ADMIN'), async (req, res) 
     await prisma.adSlot.delete({ where: { id: req.params.id } })
     res.json(successResponse(null, '删除成功'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
-  }
-})
-
-router.get('/stats/summary', authMiddleware, async (req, res) => {
-  try {
-    const total = await prisma.adSlot.count()
-    const active = await prisma.adSlot.count({ where: { status: AdSlotStatus.ACTIVE } })
-    const maintenance = await prisma.adSlot.count({ where: { status: AdSlotStatus.MAINTENANCE } })
-    
-    const byType = await prisma.adSlot.groupBy({
-      by: ['type'],
-      _count: { type: true }
-    })
-
-    const byDistrict = await prisma.adSlot.groupBy({
-      by: ['district'],
-      _count: { district: true }
-    })
-
-    res.json(successResponse({
-      total,
-      active,
-      maintenance,
-      byType,
-      byDistrict
-    }))
-  } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('删除广告位失败，请稍后重试'))
   }
 })
 

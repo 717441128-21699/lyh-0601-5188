@@ -101,7 +101,7 @@ router.post('/generate', authMiddleware, roleMiddleware('ADMIN'), async (req, re
       inspections
     }, `成功生成 ${inspections.length} 条巡检任务`))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('巡检操作失败，请稍后重试'))
   }
 })
 
@@ -146,7 +146,41 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
       pageSize: parseInt(pageSize)
     }))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('查询巡检列表失败，请稍后重试'))
+  }
+})
+
+router.get('/stats/summary', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { startDate, endDate } = req.query as any
+    const where: any = {}
+
+    if (startDate || endDate) {
+      where.scheduledDate = {}
+      if (startDate) where.scheduledDate.gte = new Date(startDate)
+      if (endDate) where.scheduledDate.lte = new Date(endDate)
+    }
+
+    const total = await prisma.inspection.count({ where })
+    const completed = await prisma.inspection.count({
+      where: { ...where, status: InspectionStatus.COMPLETED }
+    })
+    const failed = await prisma.inspection.count({
+      where: { ...where, status: InspectionStatus.FAILED }
+    })
+    const pending = await prisma.inspection.count({
+      where: { ...where, status: InspectionStatus.PENDING }
+    })
+
+    res.json(successResponse({
+      total,
+      completed,
+      failed,
+      pending,
+      completionRate: total > 0 ? Math.round(((completed + failed) / total) * 10000) / 100 : 0
+    }))
+  } catch (error: any) {
+    res.json(errorResponse('巡检统计失败，请稍后重试'))
   }
 })
 
@@ -166,7 +200,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     res.json(successResponse(inspection))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('巡检操作失败，请稍后重试'))
   }
 })
 
@@ -261,41 +295,7 @@ router.put('/:id/complete', authMiddleware, roleMiddleware('INSPECTOR', 'ADMIN')
 
     res.json(successResponse(updated, '巡检已完成'))
   } catch (error: any) {
-    res.json(errorResponse(error.message))
-  }
-})
-
-router.get('/stats/summary', authMiddleware, async (req: AuthRequest, res) => {
-  try {
-    const { startDate, endDate } = req.query as any
-    const where: any = {}
-
-    if (startDate || endDate) {
-      where.scheduledDate = {}
-      if (startDate) where.scheduledDate.gte = new Date(startDate)
-      if (endDate) where.scheduledDate.lte = new Date(endDate)
-    }
-
-    const total = await prisma.inspection.count({ where })
-    const completed = await prisma.inspection.count({
-      where: { ...where, status: InspectionStatus.COMPLETED }
-    })
-    const failed = await prisma.inspection.count({
-      where: { ...where, status: InspectionStatus.FAILED }
-    })
-    const pending = await prisma.inspection.count({
-      where: { ...where, status: InspectionStatus.PENDING }
-    })
-
-    res.json(successResponse({
-      total,
-      completed,
-      failed,
-      pending,
-      completionRate: total > 0 ? Math.round(((completed + failed) / total) * 10000) / 100 : 0
-    }))
-  } catch (error: any) {
-    res.json(errorResponse(error.message))
+    res.json(errorResponse('巡检操作失败，请稍后重试'))
   }
 })
 

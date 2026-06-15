@@ -18,7 +18,6 @@ import {
   runDailyReportGeneration,
   runAutoInspectionGeneration
 } from './services/scheduler.service'
-import dayjs from 'dayjs'
 
 import authRoutes from './routes/auth.routes'
 import adSlotRoutes from './routes/adSlot.routes'
